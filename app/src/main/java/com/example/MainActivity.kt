@@ -49,7 +49,19 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     containerColor = Color(0xFFFFF3E0)
                 ) { innerPadding ->
-                    GameScreen(Modifier.padding(innerPadding))
+                    var isGameStarted by remember { mutableStateOf(false) }
+                    
+                    if (!isGameStarted) {
+                        MainMenuScreen(
+                            modifier = Modifier.padding(innerPadding),
+                            onStartGame = { isGameStarted = true }
+                        )
+                    } else {
+                        GameScreen(
+                            modifier = Modifier.padding(innerPadding),
+                            onBackToMenu = { isGameStarted = false }
+                        )
+                    }
                 }
             }
         }
@@ -115,11 +127,75 @@ class GameState(context: Context) {
     var bestScore by mutableIntStateOf(prefs.getInt("best_score", 0))
 
     var toneGen: ToneGenerator? = null
+    var isSoundEnabled by mutableStateOf(prefs.getBoolean("sound_enabled", true))
+
+    fun playSound(toneType: Int, durationMs: Int) {
+        if (isSoundEnabled) {
+            toneGen?.startTone(toneType, durationMs)
+        }
+    }
+    var hammerCooldown by mutableFloatStateOf(0f)
+    var isHammerActive by mutableStateOf(false)
+    var autosaveTimer by mutableFloatStateOf(0f)
+
     init {
         try {
             toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
         } catch (e: Exception) {
             // Ignore
+        }
+        loadSession()
+    }
+
+    var showLeaderboard by mutableStateOf(false)
+    var topScores by mutableStateOf(getSavedTopScores())
+
+    private fun getSavedTopScores(): List<Int> {
+        val scoresStr = prefs.getString("top_scores", "") ?: ""
+        if (scoresStr.isEmpty()) return emptyList()
+        return scoresStr.split(",").mapNotNull { it.toIntOrNull() }
+    }
+
+    private fun saveScoreToLeaderboard() {
+        val newScores = (topScores + score).sortedDescending().take(100)
+        topScores = newScores
+        prefs.edit().putString("top_scores", newScores.joinToString(",")).apply()
+    }
+
+    fun saveSession() {
+        if (isGameOver || bodies.isEmpty()) {
+            prefs.edit().remove("saved_session").apply()
+            return
+        }
+        val bodiesStr = bodies.joinToString(";") { "${it.x},${it.y},${it.vx},${it.vy},${it.type.id},${it.id}" }
+        val sessionData = "$score|$timeElapsed|$highestFruitLevel|${currentFruitType.id}|${nextFruitType.id}|$comboCount|$lastMergeTime|$bodiesStr"
+        prefs.edit().putString("saved_session", sessionData).apply()
+    }
+
+    fun loadSession(): Boolean {
+        val sessionData = prefs.getString("saved_session", null) ?: return false
+        try {
+            val parts = sessionData.split("|")
+            if (parts.size < 8) return false
+            score = parts[0].toInt()
+            timeElapsed = parts[1].toFloat()
+            highestFruitLevel = parts[2].toInt()
+            currentFruitType = FRUITS.find { it.id == parts[3].toInt() } ?: currentFruitType
+            nextFruitType = FRUITS.find { it.id == parts[4].toInt() } ?: nextFruitType
+            comboCount = parts[5].toInt()
+            lastMergeTime = parts[6].toFloat()
+            val bodiesStr = parts[7]
+            bodies.clear()
+            if (bodiesStr.isNotEmpty()) {
+                bodiesStr.split(";").forEach { bStr ->
+                    val bp = bStr.split(",")
+                    val type = FRUITS.find { it.id == bp[4].toInt() } ?: FRUITS[0]
+                    bodies.add(FruitBody(bp[0].toFloat(), bp[1].toFloat(), bp[2].toFloat(), bp[3].toFloat(), type, bp[5].toInt()))
+                }
+            }
+            return true
+        } catch (e: Exception) {
+            return false
         }
     }
 
@@ -169,7 +245,7 @@ class GameState(context: Context) {
         bodies.add(FruitBody(currentX, yPos, 0f, 0f, currentFruitType))
         isDropping = true
         dropCooldown = 1.0f
-        toneGen?.startTone(ToneGenerator.TONE_CDMA_KEYPAD_VOLUME_KEY_LITE, 30)
+        playSound(ToneGenerator.TONE_CDMA_KEYPAD_VOLUME_KEY_LITE, 30)
         if (currentFruitType.id > highestFruitLevel) highestFruitLevel = currentFruitType.id
     }
 
@@ -184,17 +260,30 @@ class GameState(context: Context) {
         gameOverTimer = 0f
         isDropping = false
         dropCooldown = 0f
+        hammerCooldown = 0f
+        isHammerActive = false
         comboCount = 1
         lastMergeTime = 0f
         currentFruitType = randomInitialFruit(0)
         nextFruitType = randomInitialFruit(0)
         if (width > 0f) currentX = width / 2f
+        prefs.edit().remove("saved_session").apply()
     }
 
     fun update(dt: Float) {
         if (isGameOver || width == 0f || height == 0f) return
         timeElapsed += dt
         
+        autosaveTimer += dt
+        if (autosaveTimer > 2f) {
+            autosaveTimer = 0f
+            saveSession()
+        }
+
+        if (hammerCooldown > 0f) {
+            hammerCooldown -= dt
+        }
+
         if (!initialized) {
             initialized = true
             currentX = width / 2f
@@ -240,8 +329,9 @@ class GameState(context: Context) {
             }
             if (isStableOverLine) {
                 gameOverTimer += dt
-                if (gameOverTimer > 2f) {
+                if (gameOverTimer > 2f && !isGameOver) {
                     isGameOver = true
+                    saveScoreToLeaderboard()
                 }
             } else {
                 gameOverTimer = 0f
@@ -302,7 +392,7 @@ class GameState(context: Context) {
                                 toAdd.add(FruitBody(midX, midY, 0f, -150f, newType))
                                 
                                 val timeSinceLastMerge = timeElapsed - lastMergeTime
-                                if (timeSinceLastMerge < 3f && lastMergeTime > 0f) {
+                                if (timeSinceLastMerge < 2f && lastMergeTime > 0f) {
                                     comboCount++
                                 } else {
                                     comboCount = 1
@@ -323,7 +413,7 @@ class GameState(context: Context) {
                                     2 -> ToneGenerator.TONE_PROP_ACK
                                     else -> ToneGenerator.TONE_PROP_PROMPT
                                 }
-                                toneGen?.startTone(toneType, 50)
+                                playSound(toneType, 50)
                                 
                                 for (k in 0 until 15) {
                                     val angle = Random.nextFloat() * 2 * kotlin.math.PI.toFloat()
@@ -416,7 +506,10 @@ class GameState(context: Context) {
 }
 
 @Composable
-fun GameScreen(modifier: Modifier = Modifier) {
+fun GameScreen(modifier: Modifier = Modifier, onBackToMenu: () -> Unit = {}) {
+    androidx.activity.compose.BackHandler {
+        onBackToMenu()
+    }
     val context = LocalContext.current
     val gameState = remember { GameState(context) }
 
@@ -455,8 +548,46 @@ fun GameScreen(modifier: Modifier = Modifier) {
                     gameState.width = it.width.toFloat()
                     gameState.height = it.height.toFloat()
                 }
-                .pointerInput(gameState.isDropping) {
-                    if (!gameState.isDropping) {
+                .pointerInput(gameState.isDropping, gameState.isHammerActive) {
+                    if (gameState.isHammerActive) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown()
+                            var target: FruitBody? = null
+                            for (b in gameState.bodies) {
+                                val dx = down.position.x - b.x
+                                val dy = down.position.y - b.y
+                                val rPx = b.type.radiusRatio * gameState.width
+                                if (dx * dx + dy * dy <= rPx * rPx) {
+                                    target = b
+                                    break
+                                }
+                            }
+                            if (target != null) {
+                                gameState.bodies.remove(target)
+                                gameState.isHammerActive = false
+                                gameState.hammerCooldown = 20f
+                                
+                                for (k in 0 until 15) {
+                                    val angle = Random.nextFloat() * 2 * kotlin.math.PI.toFloat()
+                                    val speed = Random.nextFloat() * 200f + 50f
+                                    gameState.particles.add(
+                                        Particle(
+                                            x = target.x,
+                                            y = target.y,
+                                            vx = kotlin.math.cos(angle) * speed,
+                                            vy = kotlin.math.sin(angle) * speed,
+                                            color = target.type.color,
+                                            life = Random.nextFloat() * 0.5f + 0.5f,
+                                            size = Random.nextFloat() * 15f + 5f
+                                        )
+                                    )
+                                }
+                                gameState.playSound(ToneGenerator.TONE_PROP_ACK, 50)
+                            } else {
+                                gameState.isHammerActive = false // Cancel on background tap
+                            }
+                        }
+                    } else if (!gameState.isDropping) {
                         awaitEachGesture {
                             val down = awaitFirstDown()
                             gameState.updateDropX(down.position.x)
@@ -474,11 +605,38 @@ fun GameScreen(modifier: Modifier = Modifier) {
         ) {
             val tick = gameState.tick
             val width = gameState.width
+            val height = gameState.height
 
             Canvas(Modifier.fillMaxSize()) {
                 val _req = tick 
 
                 if (width > 0f) {
+                    val parallaxScore = gameState.score
+                    val baseColor = when {
+                        parallaxScore > 5000 -> Color(0xFFE1BEE7)
+                        parallaxScore > 2000 -> Color(0xFFC8E6C9)
+                        parallaxScore > 500 -> Color(0xFFBBDEFB)
+                        else -> Color(0xFFFFF3E0)
+                    }
+                    val bgIntensity = (kotlin.math.sin(gameState.timeElapsed * 2.0).toFloat() * 0.05f + 0.95f)
+                    val color = Color(
+                        baseColor.red * bgIntensity,
+                        baseColor.green * bgIntensity,
+                        baseColor.blue * bgIntensity,
+                        1f
+                    )
+                    drawRect(color = color)
+                    
+                    for (i in 0 until 5) {
+                        val cx = (gameState.timeElapsed * 20f * (i + 1)) % width
+                        val cy = height * (i + 1) / 6f + kotlin.math.sin(gameState.timeElapsed * (i+1)) * 50f
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.3f),
+                            radius = width * 0.1f * (i + 1) / 3f,
+                            center = Offset(cx, cy)
+                        )
+                    }
+
                     val dropLimitY = width * 0.15f
 
                     drawLine(
@@ -572,13 +730,36 @@ fun GameScreen(modifier: Modifier = Modifier) {
                 }
             }
 
+            Box(
+                Modifier.fillMaxSize().padding(16.dp),
+                contentAlignment = Alignment.BottomEnd
+            ) {
+                FloatingActionButton(
+                    onClick = { if (gameState.hammerCooldown <= 0f) gameState.isHammerActive = !gameState.isHammerActive },
+                    containerColor = if (gameState.isHammerActive) Color.Red else if (gameState.hammerCooldown <= 0f) Color(0xFFFF9800) else Color.Gray
+                ) {
+                    Text("🔨", fontSize = 24.sp)
+                }
+            }
+
             if (gameState.isGameOver) {
-                GameOverOverlay(
-                    score = gameState.score, 
-                    bestScore = gameState.bestScore, 
-                    highestFruitLevel = gameState.highestFruitLevel,
-                    onRestart = { gameState.reset() }
-                )
+                if (gameState.showLeaderboard) {
+                    LeaderboardOverlay(
+                        topScores = gameState.topScores,
+                        currentScore = gameState.score,
+                        onClose = { gameState.showLeaderboard = false }
+                    )
+                } else {
+                    GameOverOverlay(
+                        score = gameState.score, 
+                        bestScore = gameState.bestScore, 
+                        highestFruitLevel = gameState.highestFruitLevel,
+                        rank = gameState.topScores.indexOf(gameState.score).let { if (it >= 0) it + 1 else -1 },
+                        onShowLeaderboard = { gameState.showLeaderboard = true },
+                        onRestart = { gameState.reset() },
+                        onMainMenu = onBackToMenu
+                    )
+                }
             }
         }
     }
@@ -624,7 +805,7 @@ fun GameTopBar(score: Int, bestScore: Int, nextFruit: FruitType, timeElapsed: Fl
 }
 
 @Composable
-fun GameOverOverlay(score: Int, bestScore: Int, highestFruitLevel: Int, onRestart: () -> Unit) {
+fun GameOverOverlay(score: Int, bestScore: Int, highestFruitLevel: Int, rank: Int, onShowLeaderboard: () -> Unit, onRestart: () -> Unit, onMainMenu: () -> Unit) {
     val highestFruit = FRUITS.find { it.id == highestFruitLevel } ?: FRUITS[0]
 
     Box(
@@ -646,6 +827,10 @@ fun GameOverOverlay(score: Int, bestScore: Int, highestFruitLevel: Int, onRestar
                 Spacer(Modifier.height(16.dp))
                 Text("Score: $score", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
                 Text("Best: $bestScore", fontSize = 20.sp, fontWeight = FontWeight.Medium, color = Color(0xFF8D6E63))
+                if (rank > 0) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Rank: #$rank", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1976D2))
+                }
                 Spacer(Modifier.height(24.dp))
                 
                 Text("Highest Fruit", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color(0xFF8D6E63))
@@ -667,6 +852,15 @@ fun GameOverOverlay(score: Int, bestScore: Int, highestFruitLevel: Int, onRestar
                     contentPadding = PaddingValues(horizontal = 32.dp, vertical = 16.dp)
                 ) {
                     Text("Play Again", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
+                
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = onShowLeaderboard) {
+                    Text("View Top 100", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF5D4037))
+                }
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onMainMenu) {
+                    Text("Main Menu", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF5D4037))
                 }
                 
                 Spacer(Modifier.height(32.dp))
@@ -699,6 +893,111 @@ fun GameOverOverlay(score: Int, bestScore: Int, highestFruitLevel: Int, onRestar
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun LeaderboardOverlay(topScores: List<Int>, currentScore: Int, onClose: () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.6f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .fillMaxHeight(0.8f),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            shape = RoundedCornerShape(24.dp)
+        ) {
+            Column(
+                Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Top 100", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color(0xFF5D4037))
+                Spacer(Modifier.height(16.dp))
+                
+                androidx.compose.foundation.lazy.LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(topScores.size) { index ->
+                        val itemScore = topScores[index]
+                        val isCurrent = itemScore == currentScore
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(if (isCurrent) Color(0xFFFFD54F).copy(alpha = 0.3f) else Color.Transparent, RoundedCornerShape(8.dp))
+                                .padding(vertical = 12.dp, horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("#${index + 1}", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF5D4037))
+                            Text("$itemScore", fontSize = 20.sp, fontWeight = if (isCurrent) FontWeight.ExtraBold else FontWeight.SemiBold, color = if (isCurrent) Color(0xFFE53935) else Color.Black)
+                        }
+                        if (index < topScores.size - 1) {
+                            HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
+                        }
+                    }
+                }
+                
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = onClose,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5D4037))
+                ) {
+                    Text("Close", fontSize = 18.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MainMenuScreen(modifier: Modifier = Modifier, onStartGame: () -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("FruitMergePrefs", Context.MODE_PRIVATE) }
+    var isSoundEnabled by remember { mutableStateOf(prefs.getBoolean("sound_enabled", true)) }
+
+    Column(
+        modifier = modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("FRUIT MERGE", fontSize = 48.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFFE53935))
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("🍉", fontSize = 48.sp)
+            Text("🥥", fontSize = 48.sp)
+            Text("🍑", fontSize = 48.sp)
+        }
+        
+        Spacer(modifier = Modifier.height(64.dp))
+        
+        Button(
+            onClick = onStartGame,
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
+            contentPadding = PaddingValues(horizontal = 48.dp, vertical = 20.dp),
+            shape = RoundedCornerShape(32.dp)
+        ) {
+            Text("PLAY", fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(
+            onClick = {
+                isSoundEnabled = !isSoundEnabled
+                prefs.edit().putBoolean("sound_enabled", isSoundEnabled).apply()
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5D4037)),
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 12.dp),
+            shape = RoundedCornerShape(24.dp)
+        ) {
+            Text(if (isSoundEnabled) "🔊 Sound & Music On" else "🔇 Sound & Music Off", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
