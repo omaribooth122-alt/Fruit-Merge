@@ -10,6 +10,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import coil.compose.AsyncImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -128,6 +130,7 @@ class GameState(context: Context) {
         }
     }
 
+    var highestFruitLevel by mutableIntStateOf(0)
     var tick by mutableIntStateOf(0)
     var score by mutableIntStateOf(0)
     var timeElapsed by mutableFloatStateOf(0f)
@@ -167,6 +170,7 @@ class GameState(context: Context) {
         isDropping = true
         dropCooldown = 1.0f
         toneGen?.startTone(ToneGenerator.TONE_CDMA_KEYPAD_VOLUME_KEY_LITE, 30)
+        if (currentFruitType.id > highestFruitLevel) highestFruitLevel = currentFruitType.id
     }
 
     fun reset() {
@@ -174,6 +178,7 @@ class GameState(context: Context) {
         particles.clear()
         floatingTexts.clear()
         score = 0
+        highestFruitLevel = 0
         timeElapsed = 0f
         isGameOver = false
         gameOverTimer = 0f
@@ -307,6 +312,7 @@ class GameState(context: Context) {
                                 val addedScore = newType.score * comboCount
                                 score += addedScore
                                 checkBestScore()
+                                if (newType.id > highestFruitLevel) highestFruitLevel = newType.id
                                 
                                 val floatText = if (comboCount > 1) "+$addedScore (${comboCount}x COMBO!)" else "+$addedScore"
                                 floatingTexts.add(FloatingText(midX, midY, floatText, Color.White, 1.5f, 1.5f))
@@ -567,7 +573,12 @@ fun GameScreen(modifier: Modifier = Modifier) {
             }
 
             if (gameState.isGameOver) {
-                GameOverOverlay(score = gameState.score, bestScore = gameState.bestScore, onRestart = { gameState.reset() })
+                GameOverOverlay(
+                    score = gameState.score, 
+                    bestScore = gameState.bestScore, 
+                    highestFruitLevel = gameState.highestFruitLevel,
+                    onRestart = { gameState.reset() }
+                )
             }
         }
     }
@@ -613,7 +624,9 @@ fun GameTopBar(score: Int, bestScore: Int, nextFruit: FruitType, timeElapsed: Fl
 }
 
 @Composable
-fun GameOverOverlay(score: Int, bestScore: Int, onRestart: () -> Unit) {
+fun GameOverOverlay(score: Int, bestScore: Int, highestFruitLevel: Int, onRestart: () -> Unit) {
+    val highestFruit = FRUITS.find { it.id == highestFruitLevel } ?: FRUITS[0]
+
     Box(
         Modifier
             .fillMaxSize()
@@ -633,6 +646,20 @@ fun GameOverOverlay(score: Int, bestScore: Int, onRestart: () -> Unit) {
                 Spacer(Modifier.height(16.dp))
                 Text("Score: $score", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
                 Text("Best: $bestScore", fontSize = 20.sp, fontWeight = FontWeight.Medium, color = Color(0xFF8D6E63))
+                Spacer(Modifier.height(24.dp))
+                
+                Text("Highest Fruit", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color(0xFF8D6E63))
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    Modifier
+                        .size(64.dp)
+                        .background(highestFruit.color, CircleShape)
+                        .border(3.dp, Color.White.copy(alpha = 0.5f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(highestFruit.emoji, fontSize = 32.sp)
+                }
+
                 Spacer(Modifier.height(32.dp))
                 Button(
                     onClick = onRestart,
@@ -640,6 +667,36 @@ fun GameOverOverlay(score: Int, bestScore: Int, onRestart: () -> Unit) {
                     contentPadding = PaddingValues(horizontal = 32.dp, vertical = 16.dp)
                 ) {
                     Text("Play Again", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
+                
+                Spacer(Modifier.height(32.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    AsyncImage(
+                        model = "https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6",
+                        contentDescription = "GHBanner",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(100.dp)
+                            .padding(horizontal = 16.dp)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Built with AI Studio",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1976D2)
+                    )
+                    Text(
+                        "The fastest path from prompt to production with Gemini.",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color.Gray,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                    TextButton(onClick = { uriHandler.openUri("https://aistudio.google.com/apps") }) {
+                        Text("Start building", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
