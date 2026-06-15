@@ -1,0 +1,6 @@
+{
+  "name": "Fruit Merge",
+  "description": "Combine smaller fruits to create larger, unique varieties in this cute physics puzzle game.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
